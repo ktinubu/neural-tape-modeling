@@ -6,99 +6,109 @@
 ## What this repo is / what the canonical example does
 Research code (DAFx23 paper) for neural modeling of magnetic tape recorders in PyTorch. It
 ships several model architectures in `code/model.py` — a GRU `RNN`, a `DiffDelRNN` (GRU +
-differentiable delay line), and a `DiffusionGenerator` (UNet1D, needs a trained checkpoint).
-The canonical example chosen here is instantiating the flagship `RNN` model (as used by
-`code/train.py`/`code/test-model.py`) and running a synthetic forward pass on a short audio
-tensor — this is the smallest self-contained slice that exercises the real network code
-without requiring the Zenodo dataset, submodule checkouts, or trained weights.
+differentiable delay line), and a `DiffusionGenerator` (UNet1D). This mirror also ships the
+paper's **real trained checkpoints** under `weights/` (small — e.g. `best.pth` for the plain
+GRU is ~53 KB), so no checkpoint download was needed.
+
+The canonical example is a standalone reproduction of the "MODEL" section of
+`code/test-model.py`: load the real `GRU-HS[64]-L[ESR]-DS[...AKAI_IPS[7.5]_MAXELL]_BEST`
+checkpoint into `code/model.py`'s `RNN` class exactly as `test-model.py` does
+(`model.load_state_dict(torch.load(model_best_path, map_location=device))`), then run the
+model's actual inference path — `RNN.predict()` (the same call `test-model.py` makes on every
+dataset batch) — on a synthetic-but-realistic input signal (an 80 Hz -> 8 kHz logarithmic chirp,
+2 s @ 44.1 kHz), producing real processed output audio written to
+`setup/example_output/{input_chirp,output_tape}.wav`. See `setup/infer_example.py`.
+
+This is a **genuine, real-weights, real-inference-path** run — the boundary vs. the full
+`test-model.py` is that we skip its DATASET/DELAY/NOISE stages, which need the Zenodo
+`neural-tape-audio` dataset (not downloaded — see Caveats).
 
 ## System it was verified on
-- Apple M5 Max, macOS arm64 (Darwin). Python 3.11.15 via uv 0.11.28. Torch backend: **MPS** (no CUDA).
-- Depth reached: **smoke**
-- Wall-clock to reproduce: **~1 min** (deps were already cached by uv from prior repos in this sweep)
-  · Extra disk used: **~812 MB** (`.venv`, mostly torch/torchaudio wheels)
+- Apple M5 Max, macOS arm64 (Darwin). Python 3.11.15 via uv 0.11.28. Torch backend: **MPS**
+  available, but inference is run on **CPU** (see Caveats — upstream device bug).
+- Depth reached: **full**
+- Wall-clock to reproduce: **~3 s** for the inference step itself (deps already cached from the
+  smoke pass; `uv pip install` no-ops on re-run) · Extra disk used: **~812 MB** (`.venv`, same
+  as smoke depth — no new downloads; checkpoint (~53 KB) was already committed to the repo).
 
 ## Prerequisites
 - `uv` (0.11+), `python3.11` — both already present on this machine, no brew installs needed.
 - No system tools (cmake/ninja/faust) needed — pure Python.
-- No submodules initialized. The upstream repo's `.gitmodules` lists 6 submodules
-  (`AnalogTapeModel`, `micro_tcn`, `Automated_GuitarAmpModelling`, `GreyBoxDRC`, `auraloss`,
-  `edm`) used for training/loss functions and target generation — **not required** for the
-  smoke-depth import + forward pass, since `code/model.py`'s `RNN`/`DiffDelRNN` classes only
-  depend on `numpy`, `torch`, `torchaudio`, and the repo's own `code/networks/unet_1d.py` +
-  `code/utilities/utilities.py` (which in turn need `scipy`, `soundfile`, `librosa`).
-- No dataset download (upstream README points at a Zenodo tape-audio dataset — skipped at
-  this depth) and no checkpoint download (only needed for `DiffusionGenerator`, not exercised).
+- No submodules initialized (still not needed at this depth — see Caveats).
+- No dataset download (upstream README's Zenodo tape-audio dataset — still skipped; only needed
+  for the DATASET/DELAY/NOISE stages of `test-model.py`, not for running the trained model
+  itself). **No checkpoint download either** — `weights/GRU-HS[64]-L[ESR]-DS[ReelToReel_Dataset_
+  MiniPulse100_AKAI_IPS[7.5]_MAXELL]_BEST/best.pth` is already committed in this mirror.
 
 ## Exact steps performed (copy-paste reproducible)
 ```bash
 cd /Users/km/dev/neural-tape-modeling
 
-# 1. venv + deps (upstream's environment.yaml targets conda/mamba + CUDA; we use uv + CPU/MPS
-#    torch instead, installing only what code/model.py's RNN path actually imports)
-uv venv .venv
+# 1. venv + deps (same as smoke depth — no new packages needed for real inference)
+uv venv .venv                       # no-ops if it already exists
 source .venv/bin/activate
 uv pip install torch torchaudio numpy scipy soundfile librosa
 
-# 2. smoke test: import the real model module and run a forward pass on synthetic audio
-cd code
-python -c "
-import torch
-from model import RNN
-
-device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
-x = torch.randn(1, 1, 4096, device=device)          # (N_BATCHES, N_CHANNELS, N_SAMPLES)
-
-model = RNN(input_size=1, hidden_size=8, output_size=1, skip=True).to(device)
-model.eval()
-with torch.no_grad():
-    y = model(x)
-print('RNN forward OK — input:', tuple(x.shape), 'output:', tuple(y.shape), 'dtype:', y.dtype)
-"
+# 2. full: real checkpoint + real RNN.predict() inference path -> real output audio
+python setup/infer_example.py --device cpu
 ```
-
-Note: `model.py` uses bare imports (`from networks.unet_1d import UNet1D`, `from
-utilities.utilities import nextpow2`), i.e. it assumes `code/` itself is on `sys.path` — so
-the smoke script must run with cwd `code/` (or `code/` prepended to `PYTHONPATH`), not from
-the repo root.
+Or simply: `./setup/run.sh` (idempotent — safe to re-run; `SKIP_INSTALL=1 ./setup/run.sh` to
+skip the venv/install step).
 
 ## Expected output
 ```
-$ uv pip install torch torchaudio numpy scipy soundfile librosa
-Resolved 36 packages in 4ms
-Installed 36 packages in 245ms
- + torch==2.13.0
- + torchaudio==2.11.0
- ... (34 more, see setup/requirements.lock.txt)
-
-$ python -c "..."
-device: mps
-RNN forward OK — input: (1, 1, 4096) output: (1, 1, 4096) dtype: torch.float32
+$ python setup/infer_example.py --device cpu
+Loaded real checkpoint: /Users/km/dev/neural-tape-modeling/weights/GRU-HS[64]-L[ESR]-DS[ReelToReel_Dataset_MiniPulse100_AKAI_IPS[7.5]_MAXELL]_BEST/best.pth
+Input: (1, 1, 88200) (2.0s @ 44100Hz)
+Output: (1, 1, 88200) dtype=torch.float32
+Output stats: min=-0.3532 max=0.5804 mean=-0.011444 rms=0.1635
+Wrote /Users/km/dev/neural-tape-modeling/setup/example_output/input_chirp.wav
+Wrote /Users/km/dev/neural-tape-modeling/setup/example_output/output_tape.wav
+OK: real-checkpoint tape-model inference completed.
+OK: neural-tape-modeling canonical example completed.
 ```
+`setup/example_output/*.wav` are real playable 44.1 kHz mono WAV files (176 KB each, 2 s) —
+`input_chirp.wav` is the synthetic sweep, `output_tape.wav` is what the real trained GRU tape
+model produced from it. They are gitignored (regenerated by `run.sh`, not committed as binaries).
 
 ## Caveats / boundary
-- **Smoke depth only**: no training, no dataset, no checkpoint download. The real
-  training/eval pipelines (`code/train.py`, `code/scripts/*.sh`) need the Zenodo tape-audio
-  dataset symlinked at `audio/` and the 6 git submodules checked out — none of that was
-  attempted here.
-- **`RNN.predict()` / `RNN.warm_start()` are MPS-broken (upstream bug, not something we
-  patched)**: they hard-code `torch.device("cuda" if torch.cuda.is_available() else "cpu")`
-  internally, ignoring the device the model was actually moved to. On this MPS machine calling
-  `model.predict(x)` with a model on `mps` raises `RuntimeError: Input and parameter tensors
-  are not at the same device, found input tensor at cpu and parameter tensor at mps:0` — the
-  same bug exists in `DiffDelRNN`. Plain `model(x)` (the `forward()` we smoke-test) is
-  unaffected because it doesn't call `.to(device)` internally. Verified: `predict()` works
-  fine when the model/tensor are kept on `cpu` instead of `mps`.
-- `DiffusionGenerator` (the UNet1D diffusion model) was not smoke-tested — its constructor
-  requires `args.network.checkpoint`, a trained weights file not present in this mirror.
+- **`RNN.predict()` / `RNN.warm_start()` are MPS-broken (upstream bug, not patched)**: they
+  hard-code `torch.device("cuda" if torch.cuda.is_available() else "cpu")` internally, ignoring
+  the device the model/input were actually placed on. Confirmed by reproduction:
+  `python setup/infer_example.py --device mps` raises `RuntimeError: Input and parameter tensors
+  are not at the same device, found input tensor at cpu and parameter tensor at mps:0` inside
+  `RNN.forward`'s `self.GRU(...)` call, because `predict()`'s internal `output` buffer and the
+  `warm_start()` zero-tensor are forced onto `cpu` while the model itself was `.to('mps')`.
+  **Fix used here: always run with `--device cpu`** (the default) — this is a genuine, real
+  full-precision CPU run of the real trained weights, just not accelerated by MPS.
+- **Not exercised**: the DATASET/DELAY/NOISE stages of the real `code/test-model.py` (loading
+  `VADataset` from the Zenodo `neural-tape-audio` archive, applying `TimeVaryingDelayLine` with
+  a per-recording delay trajectory, adding real/generated tape noise) and the `DiffDelRNN` /
+  `DiffusionGenerator` architectures. All of these need either the Zenodo dataset (multi-GB,
+  requires a separate download+extract per tape/speed combination) or the 6 git submodules
+  (`AnalogTapeModel`, `micro_tcn`, `Automated_GuitarAmpModelling`, `GreyBoxDRC`, `auraloss`,
+  `edm`) for the training-time loss functions used in `test-model.py`'s `--COMPUTE_LOSS` path.
+  Neither is needed to run the trained nonlinearity model itself, which is what this example
+  demonstrates. **To extend to the literal `test-model.py` script**: `git submodule update
+  --init --recursive`, download+extract a Zenodo tape-audio tar to `../neural-tape-audio/`
+  (symlinked at `audio/`), `uv pip install labellines omegaconf`, then run e.g.
+  `cd scripts && ./test-model-prediction.sh REAL MAXELL 7.5 GRU ESR`.
 - `environment.yaml` targets conda/mamba + `pytorch-cuda=11.7`; we used `uv` + CPU/MPS wheels
-  instead (no CUDA on this machine), so package versions differ from upstream's pinned conda
-  env (`environment.yaml` doesn't pin versions anyway).
+  instead (no CUDA on this machine), so package versions differ from upstream's pinned conda env
+  (`environment.yaml` doesn't pin versions anyway).
+- `hidden_size=64` and `WEIGHT_NAME` in `setup/infer_example.py` are hardcoded to match one
+  specific checkpoint folder name (parsed the same way `code/utilities/utilities.py:
+  parse_hidden_size/parse_model/parse_loss` would); swap `WEIGHT_NAME` to point at any other
+  `weights/GRU-...` or `weights/DiffDelGRU-...` folder to reproduce with a different trained
+  model (DiffDelGRU additionally needs a delay trajectory argument to `predict()`, not wired up
+  in this standalone script).
 
 ## Troubleshooting
-- No errors were hit during install (`uv pip install` resolved cleanly against the cached
-  wheel cache from earlier repos in this sweep — first-time install of torch/torchaudio would
-  take longer / use more network).
-- If you see the `cuda`/`mps` device-mismatch `RuntimeError` above, it's the upstream
-  `predict()`/`warm_start()` device bug described in Caveats — use `forward()` directly, or
-  force `cpu`.
+- No errors were hit during install (`uv pip install` resolves instantly against the cache from
+  the smoke pass).
+- If you see the `cuda`/`mps` device-mismatch `RuntimeError`, that's the upstream
+  `predict()`/`warm_start()` device bug described in Caveats — pass `--device cpu` (the
+  default), or patch `model.py`'s hardcoded `torch.device(...)` calls to accept the caller's
+  device.
+- `torch.load(..., map_location=device)` on these checkpoints loads a plain `state_dict` (an
+  `OrderedDict` of `GRU.*`/`output.*` tensors) cleanly — no pickle-of-arbitrary-object concerns.

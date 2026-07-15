@@ -3,13 +3,14 @@
 # run.sh — reproduce the canonical example for neural-tape-modeling.
 # Idempotent: safe to re-run. Verified on Apple M5 Max / macOS arm64 / MPS.
 #
-# Depth: smoke — installs deps, imports code/model.py, instantiates the RNN model,
-# and runs a synthetic forward pass on a short audio tensor. No dataset, no
-# submodules, no checkpoint downloads.
+# Depth: full — installs deps, loads the repo's real (already-trained) GRU
+# checkpoint from weights/, and runs the real code/model.py::RNN.predict()
+# inference path (same call code/test-model.py makes) on a synthetic chirp
+# signal, producing real input/output WAV files under setup/example_output/.
 #
 # Usage:
-#   ./setup/run.sh          # full setup + run the canonical example
-#   SKIP_INSTALL=1 ./setup/run.sh   # skip dependency install, just run
+#   ./setup/run.sh                    # full setup + run the canonical example
+#   SKIP_INSTALL=1 ./setup/run.sh     # skip dependency install, just run
 # ==============================================================================
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -28,27 +29,12 @@ else
   source .venv/bin/activate
 fi
 
-# --- 2. run the canonical example ------------------------------------------
-# model.py uses bare imports (from networks.unet_1d import ...), so it must run
-# with code/ on sys.path — cd into code/ rather than using PYTHONPATH tricks.
-(
-  cd code
-  python -c "
-import torch
-from model import RNN
-
-device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
-x = torch.randn(1, 1, 4096, device=device)          # (N_BATCHES, N_CHANNELS, N_SAMPLES)
-
-model = RNN(input_size=1, hidden_size=8, output_size=1, skip=True).to(device)
-model.eval()
-with torch.no_grad():
-    y = model(x)
-
-assert tuple(y.shape) == tuple(x.shape), f'shape mismatch: {y.shape} vs {x.shape}'
-print(f'device: {device}')
-print(f'RNN forward OK — input: {tuple(x.shape)} output: {tuple(y.shape)} dtype: {y.dtype}')
-"
-)
+# --- 2. run the canonical example -------------------------------------------
+# Real checkpoint (weights/GRU-HS[64]-L[ESR]-DS[...AKAI_IPS[7.5]_MAXELL]_BEST/best.pth,
+# ~53KB, already committed to this mirror — no download needed) through the
+# real RNN.predict() inference path. See setup/infer_example.py for details.
+# NOTE: predict()/warm_start() hard-code device="cuda-or-cpu" internally (upstream
+# bug) -> always use --device cpu here (default) or it RuntimeErrors on MPS.
+python setup/infer_example.py --device cpu
 
 echo "OK: neural-tape-modeling canonical example completed."
